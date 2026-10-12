@@ -1,0 +1,25 @@
+manifest:
+  remotes:
+    - name: zephyrproject-rtos
+      url-base: https://github.com/zephyrproject-rtos
+    - name: perovsat
+      url-base: https://github.com/PEROVSAT
+  projects:
+    - name: zephyr
+      remote: zephyrproject-rtos
+      revision: v4.4.0
+      import:
+        name-allowlist:
+          - cmsis
+          - cmsis_6
+          - hal_rpi_pico
+    - name: basilisk-simulation
+      remote: perovsat
+      revision: 2c02fb347ac6e5492b3f11f0b09fe662526880fd
+    # Repository exists; the Zephyr application will be added separately.
+    - name: mpu6050-emulator
+      remote: perovsat
+      path: emulated-devices/mpu6050
+      revision: 563eed96e558550885adcbf0c3748bd965b366d3
+  self:
+    path: flatsat-controller

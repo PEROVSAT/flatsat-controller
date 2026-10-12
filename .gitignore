@@ -66,3 +66,11 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Python and local FlatSat configuration
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+flatsat.local.*
