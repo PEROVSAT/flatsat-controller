@@ -3,6 +3,40 @@
 Workspace entry point for the PEROVSAT FlatSat/HITL controller, Basilisk
 simulation, and emulated devices.
 
+## Controller
+
+From this checkout, install the Python package editable into the workspace venv and
+run the Pico 2 public-mock flash bring-up experiment:
+
+```sh
+source ../.venv/bin/activate
+pip install -e .
+flatsat run flash-public-mock --config configs/pico2_public_mock.yml
+```
+
+Run artifacts land under `runs/` (override with `--runs-root`). The experiment
+builds with `CONSOLE=logs` and flashes through the OpenOCD binary in the config
+(`west flash -r openocd --openocd …`). Unit tests: `python -m unittest discover -s tests -v`.
+
+Each build/flash has its own numbered directory under `operations/`, preserving
+repeated builds and logs. `installation.json`, `parameters.json`, and
+`actions.jsonl` retain the effective inputs and actions. Existing config YAML
+still works; [controller design](CONTROLLER_DESIGN.md) shows named builds and
+per-target probe serial configuration. Experiment code uses
+`bench.firmware.build(request)`, `bench.firmware.flash(target, artifact)`, and
+`bench.operator.confirm(message)`.
+
+The build uses the flight-software checkout's own `west` (see `app_root` in the
+config), not the FlatSat workspace Zephyr tree. `app_root` is resolved relative to
+the config file and must point at the `perovsat-app` directory. A completed run only
+means the build and flash steps finished; it is not a PASS/FAIL test verdict.
+
+## Design
+
+- [FlatSat specification](FlatSat.md): purpose and initial acceptance criteria.
+- [System architecture](ARCHITECTURE.md): components and interfaces.
+- [Controller design](CONTROLLER_DESIGN.md): Python bench API, experiments, and implementation tasks.
+
 ## First setup
 
 Target hosts: macOS Apple Silicon and Ubuntu 26.04 x86-64. Install Python >=3.12,

@@ -21,5 +21,9 @@ manifest:
       remote: perovsat
       path: emulated-devices/mpu6050
       revision: 563eed96e558550885adcbf0c3748bd965b366d3
+    - name: hitl-bridge
+      remote: perovsat
+      path: hitl-bridge
+      revision: 5a651b0bb16bea64b57e15f45fe34b6364ac4ca4
   self:
     path: flatsat-controller

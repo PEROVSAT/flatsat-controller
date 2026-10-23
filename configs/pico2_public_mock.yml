@@ -1,0 +1,4 @@
+# Paths are relative to this file, except openocd, which is expanded from ~.
+app_root: ../../../perovsat-workspace/perovsat-app
+board: rpi_pico2/rp2350a/m33
+openocd: ~/.local/bin/openocd
