@@ -89,6 +89,53 @@ class CapabilityTests(unittest.TestCase):
             result = next((root / "runs").glob("*/result.json"))
             self.assertEqual(json.loads(result.read_text())["status"], "completed")
 
+    def test_cli_displays_failed_and_invalid_verdicts_and_exits_nonzero(self):
+        import contextlib
+        import io
+        from flatsat_controller.types import ExperimentResult
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = root / "bench.yml"
+            config.write_text("{}\n")
+            entry = Experiment(lambda *_: None, lambda _: None)
+            for verdict in ("fail", "invalid"):
+                with self.subTest(verdict=verdict):
+                    result = ExperimentResult(
+                        "mpu6050-ab",
+                        "completed",
+                        verdict,
+                        ("readback did not satisfy the run criteria",),
+                        root,
+                        (),
+                    )
+                    stdout = io.StringIO()
+                    with (
+                        patch.dict(
+                            "flatsat_controller.cli.EXPERIMENTS",
+                            {"mpu6050-ab": entry},
+                        ),
+                        patch(
+                            "flatsat_controller.cli.run_experiment",
+                            return_value=result,
+                        ),
+                        contextlib.redirect_stdout(stdout),
+                    ):
+                        with self.assertRaises(SystemExit) as caught:
+                            main(
+                                [
+                                    "run",
+                                    "mpu6050-ab",
+                                    "--config",
+                                    str(config),
+                                    "--runs-root",
+                                    str(root / "runs"),
+                                ]
+                            )
+                    self.assertEqual(caught.exception.code, 1)
+                    self.assertIn(f"verdict: {verdict}", stdout.getvalue())
+                    self.assertIn("readback did not satisfy", stdout.getvalue())
+
     def test_two_apps_preserve_artifacts_and_flash_selected_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -102,9 +149,11 @@ class CapabilityTests(unittest.TestCase):
             for index in range(2):
                 app = root / f"app-{index}"
                 app.mkdir()
-                (app / "dbuild.yml").write_text(yaml.safe_dump(DBUILD_SOURCE))
+                catalog = yaml.safe_load(yaml.safe_dump(DBUILD_SOURCE))
+                catalog["devices"]["IMU"]["modes"][f"mode-{index}"] = {}
+                (app / "dbuild.yml").write_text(yaml.safe_dump(catalog))
                 selections = {"IMU": f"mode-{index}"}
-                request = BuildRequest(app, f"board-{index}", selections)
+                request = BuildRequest(app, "rpi_pico2/rp2350a/m33", selections)
                 selections["IMU"] = "changed-after-construction"
                 artifacts.append(firmware.build(request))
             first, second = artifacts
@@ -125,14 +174,14 @@ class CapabilityTests(unittest.TestCase):
                 self.assertEqual(
                     metadata["app_root"], str((root / f"app-{index}").resolve())
                 )
-                self.assertEqual(metadata["board"], f"board-{index}")
-            firmware.flash(Target("emulator", "board-0", "probe_12:34"), first)
+                self.assertEqual(metadata["board"], "rpi_pico2/rp2350a/m33")
+            firmware.flash(Target("emulator", "rpi_pico2/rp2350a/m33", "probe_12:34"), first)
             self.assertEqual(fake.records[-1]["cwd"], first.app_root)
             self.assertEqual(
                 fake.records[-1]["argv"][-2:],
                 ["--cmd-pre-init", "adapter serial probe_12:34"],
             )
-            firmware.flash(Target("obc", "board-1"), second)
+            firmware.flash(Target("obc", "rpi_pico2/rp2350a/m33"), second)
             self.assertNotIn("--cmd-pre-init", fake.records[-1]["argv"])
             actions = [
                 json.loads(line)
@@ -141,7 +190,7 @@ class CapabilityTests(unittest.TestCase):
             self.assertEqual(actions[-2]["target"], "emulator")
             self.assertEqual(len({entry["operation_dir"] for entry in actions}), 4)
             with self.assertRaises(FlatsatError):
-                firmware.flash(Target("wrong", "board-1"), first)
+                firmware.flash(Target("wrong", "rpi_pico2/rp2350a/hazard3"), first)
             self.assertEqual(len(fake.records), 4)
 
     def test_probe_serial_rejects_tcl_injection(self):
@@ -158,7 +207,7 @@ class CapabilityTests(unittest.TestCase):
             root = Path(tmp)
             config = root / "bench.yml"
             config.write_text(
-                "west: ./west\nbuilds:\n  sensor:\n    app_root: .\n    board: pico\ntargets:\n  imu0:\n    board: pico\n    probe_serial: 123ABC\n"
+                "west: ./west\nbuilds:\n  sensor:\n    app_root: .\n    board: rpi_pico2/rp2350a/m33\ntargets:\n  imu0:\n    board: rpi_pico2/rp2350a/m33\n    probe_serial: 123ABC\n"
             )
             loaded = load_config(config)
             self.assertEqual(loaded.installation.targets["imu0"].probe_serial, "123ABC")
@@ -212,7 +261,7 @@ class CapabilityTests(unittest.TestCase):
             result = run_experiment(
                 "interrupt",
                 lambda bench, request: bench.firmware.build(request),
-                BuildRequest(root, "pico"),
+                BuildRequest(root, "rpi_pico2/rp2350a/m33"),
                 runs_root=root / "runs",
                 processes=fake,
                 bench_factory=factory,

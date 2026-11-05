@@ -25,10 +25,11 @@ def main(argv: list[str] | None = None) -> None:
         default=Path("runs"),
         help="Directory for run artifacts (default: runs)",
     )
+
     run_p.add_argument(
         "--yes",
         action="store_true",
-        help="Auto-confirm interactive prompts",
+        help="Auto-confirm operator prompts",
     )
 
     args = parser.parse_args(argv)
@@ -73,4 +74,10 @@ def _cmd_run(args: argparse.Namespace) -> None:
         for reason in result.reasons:
             print(reason, file=sys.stderr)
         sys.exit(1)
+    if result.verdict is not None:
+        print(f"verdict: {result.verdict}")
+        for reason in result.reasons:
+            print(reason)
+        if result.verdict in ("fail", "invalid"):
+            sys.exit(1)
     sys.exit(0)

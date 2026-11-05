@@ -176,7 +176,7 @@ refresh_workspace() {
     "$WORKSPACE_PYTHON" -m west update
     "$WORKSPACE_PYTHON" -m west packages pip --install
     local component
-    for component in "$APP_DIR" "$WORKSPACE_DIR/flatsat-daemon"; do
+    for component in "$WORKSPACE_DIR/hitl-bridge" "$APP_DIR" "$WORKSPACE_DIR/flatsat-daemon"; do
         if [[ -f "$component/pyproject.toml" || -f "$component/setup.py" ]]; then
             "$WORKSPACE_PYTHON" -m pip install -e "$component"
         elif [[ -f "$component/requirements.txt" ]]; then

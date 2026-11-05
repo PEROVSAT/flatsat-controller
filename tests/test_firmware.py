@@ -10,6 +10,7 @@ import yaml
 from flatsat_controller.config import load_config
 from flatsat_controller.firmware import (
     dbuild_argv,
+    build_argv,
     flash_argv,
     flight_env,
     load_dbuild,
@@ -109,6 +110,11 @@ class WriteDbuildTests(unittest.TestCase):
 
 
 class ArgvAndEnvTests(unittest.TestCase):
+    def test_plain_build_argv(self) -> None:
+        argv = build_argv(Path("/work/.venv/bin/west"), board="rpi_pico2/rp2350a/m33", app_root=Path("/app"), build_dir=Path("/runs/build"))
+        self.assertEqual(argv[1:4], ["build", "-b", "rpi_pico2/rp2350a/m33"])
+        self.assertEqual(argv[-1], "/app")
+
     def test_dbuild_argv(self) -> None:
         west = Path("/flight/.venv/bin/west")
         config = Path("/runs/dbuild.yml")
@@ -142,6 +148,7 @@ class ArgvAndEnvTests(unittest.TestCase):
             [
                 str(west),
                 "flash",
+                "--no-rebuild",
                 "-d",
                 str(build_dir),
                 "-r",
@@ -174,6 +181,68 @@ class ConfigTests(unittest.TestCase):
             cfg_path = Path(tmp) / "bench.yml"
             cfg_path.write_text("app_root: .\nboard: x\nextra: 1\n")
             with self.assertRaises(FlatsatError):
+                load_config(cfg_path)
+
+    def test_named_build_kind_workspace_and_default_board(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "app").mkdir()
+            cfg_path = root / "bench.yml"
+            cfg_path.write_text("builds:\n  plain:\n    app_root: ./app\n    kind: build\n    west: ./west\n")
+            request = load_config(cfg_path).builds["plain"]
+            self.assertEqual(request.kind, "build")
+            self.assertEqual(request.west, (root / "west").resolve())
+            self.assertEqual(request.board, "rpi_pico2/rp2350a/m33")
+
+    def test_named_builds_cannot_inherit_another_builds_west(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "app").mkdir()
+            cfg_path = root / "bench.yml"
+            cfg_path.write_text(
+                "builds:\n  workspace_a:\n    app_root: ./app\n    west: ./west-a\n"
+                "  workspace_b:\n    app_root: ./app\n"
+            )
+            with self.assertRaisesRegex(FlatsatError, "Each named build needs west"):
+                load_config(cfg_path)
+
+    def test_named_builds_with_each_west_need_no_global_west(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "app").mkdir()
+            cfg_path = root / "bench.yml"
+            cfg_path.write_text(
+                "builds:\n  a:\n    app_root: ./app\n    west: ./west-a\n"
+                "  b:\n    app_root: ./app\n    west: ./west-b\n"
+            )
+            loaded = load_config(cfg_path)
+            self.assertIsNone(loaded.installation.tools.west)
+            self.assertEqual(loaded.builds["b"].west, (root / "west-b").resolve())
+
+    def test_multiple_targets_require_unique_probe_serials(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg_path = root / "bench.yml"
+            cfg_path.write_text("targets:\n  a:\n    probe_serial: ABC\n  b:\n    probe_serial: ABC\n")
+            with self.assertRaisesRegex(FlatsatError, "distinct explicit probe_serial"):
+                load_config(cfg_path)
+
+    def test_explicit_non_pico2_board_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "app").mkdir()
+            cfg_path = root / "bench.yml"
+            cfg_path.write_text("builds:\n  app:\n    app_root: ./app\n    board: native_sim\n")
+            with self.assertRaisesRegex(FlatsatError, "only Pico 2"):
+                load_config(cfg_path)
+
+    def test_unhashable_kind_fails_as_config_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "app").mkdir()
+            cfg_path = root / "bench.yml"
+            cfg_path.write_text("builds:\n  app:\n    app_root: ./app\n    kind: [build]\n")
+            with self.assertRaisesRegex(FlatsatError, "kind must be"):
                 load_config(cfg_path)
 
 

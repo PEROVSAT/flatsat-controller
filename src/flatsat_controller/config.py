@@ -4,7 +4,9 @@ from pathlib import Path
 from collections.abc import Mapping
 import yaml
 from flatsat_controller.types import FlatsatError
-from flatsat_controller.firmware import FirmwareTools, Target, BuildRequest
+from flatsat_controller.firmware import FirmwareTools, Target, BuildRequest, validate_probe_serial
+from flatsat_controller.simulation import SimulationLinkConfig
+from flatsat_controller.firmware.types import PICO2_BOARD
 
 
 @dataclass(frozen=True)
@@ -18,6 +20,7 @@ class ControllerConfig:
     installation: Installation
     builds: Mapping[str, BuildRequest] = field(default_factory=dict)
     experiment: Mapping[str, object] = field(default_factory=dict)
+    simulation_link: SimulationLinkConfig | None = None
 
 
 def load_config(path: Path) -> ControllerConfig:
@@ -36,6 +39,7 @@ def load_config(path: Path) -> ControllerConfig:
         "targets",
         "builds",
         "experiment",
+        "simulation_link",
     }
     if unknown:
         raise FlatsatError(f"Unknown config keys {sorted(unknown)} in {config_path}")
@@ -55,16 +59,16 @@ def load_config(path: Path) -> ControllerConfig:
         if not isinstance(name, str) or not isinstance(spec, dict):
             raise FlatsatError("Each build must be a named mapping")
         if (
-            set(spec) - {"app_root", "board", "selections"}
-            or not {"app_root", "board"} <= spec.keys()
+            set(spec) - {"app_root", "board", "selections", "kind", "west"}
+            or "app_root" not in spec
         ):
             raise FlatsatError(
-                f"Build {name}: expected app_root, board, optional selections"
+                f"Build {name}: expected app_root, optional board, kind, west, selections"
             )
         app = _resolve_path(spec["app_root"], base)
         if not app.is_dir():
             raise FlatsatError(f"app_root is not a directory: {app}")
-        board = spec["board"]
+        board = spec.get("board", PICO2_BOARD)
         selections = spec.get("selections", {})
         if (
             not isinstance(board, str)
@@ -76,22 +80,34 @@ def load_config(path: Path) -> ControllerConfig:
             )
         ):
             raise FlatsatError(f"Build {name}: invalid board or selections")
-        builds[name] = BuildRequest(app, board, selections)
+        kind = spec.get("kind", "dbuild")
+        if not isinstance(kind, str) or kind not in {"build", "dbuild"}:
+            raise FlatsatError(f"Build {name}: kind must be build or dbuild")
+        if board == "rpi_pico2":
+            board = PICO2_BOARD
+        if board != PICO2_BOARD:
+            raise FlatsatError(f"Build {name}: only Pico 2 board {PICO2_BOARD} is supported")
+        build_west = (
+            _resolve_path(spec["west"], base) if spec.get("west") is not None else None
+        )
+        builds[name] = BuildRequest(app, board, selections, kind, build_west)
     default = builds.get("default")
     tools = None
     west = raw.get("west")
-    if west is not None or default is not None:
-        west = (
-            _resolve_path(west, base)
-            if west is not None
-            else default.app_root.parent / ".venv/bin/west"
+    fallback_west = _resolve_path(west, base) if west is not None else None
+    if fallback_west is None and default is not None:
+        fallback_west = default.west or default.app_root.parent / ".venv/bin/west"
+    if builds and fallback_west is None and any(request.west is None for request in builds.values()):
+        raise FlatsatError(
+            "Each named build needs west when no top-level west or builds.default is configured"
         )
+    if fallback_west is not None or builds:
         openocd = (
             _resolve_path(raw["openocd"], base)
             if raw.get("openocd") is not None
             else Path.home() / ".local/bin/openocd"
         )
-        tools = FirmwareTools(west, openocd)
+        tools = FirmwareTools(fallback_west, openocd)
     elif raw.get("openocd") is not None:
         raise FlatsatError("openocd requires west or a default build")
     target_data = raw.get(
@@ -107,19 +123,37 @@ def load_config(path: Path) -> ControllerConfig:
             or set(spec) - {"board", "probe_serial"}
         ):
             raise FlatsatError("Each target accepts board and optional probe_serial")
-        board = spec.get("board", default.board if default else None)
+        board = spec.get("board", default.board if default else PICO2_BOARD)
         serial = spec.get("probe_serial")
         if (
             not isinstance(board, str)
             or not board
-            or (serial is not None and (not isinstance(serial, str) or not serial))
+            or (serial is not None and not isinstance(serial, str))
         ):
             raise FlatsatError(f"Target {name}: invalid board or probe_serial")
+        validate_probe_serial(serial)
+        if board == "rpi_pico2":
+            board = PICO2_BOARD
+        if board != PICO2_BOARD:
+            raise FlatsatError(f"Target {name}: only Pico 2 board {PICO2_BOARD} is supported")
         targets[name] = Target(name, board, serial)
+    if len(targets) > 1:
+        serials = [target.probe_serial for target in targets.values()]
+        if any(serial is None for serial in serials) or len(set(serials)) != len(serials):
+            raise FlatsatError("Multiple targets require distinct explicit probe_serial values")
     experiment = raw.get("experiment", {})
     if not isinstance(experiment, dict):
         raise FlatsatError("experiment must be a mapping")
-    return ControllerConfig(Installation(tools, targets), builds, experiment)
+    link_data = raw.get("simulation_link")
+    link = None
+    if link_data is not None:
+        if not isinstance(link_data, dict):
+            raise FlatsatError("simulation_link must be a mapping")
+        try:
+            link = SimulationLinkConfig.from_mapping(link_data)
+        except ValueError as exc:
+            raise FlatsatError(f"Invalid simulation_link: {exc}") from exc
+    return ControllerConfig(Installation(tools, targets), builds, experiment, link)
 
 
 def _resolve_path(value: object, base: Path) -> Path:

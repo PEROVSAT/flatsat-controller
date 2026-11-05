@@ -5,31 +5,54 @@ simulation, and emulated devices.
 
 ## Controller
 
-From this checkout, install the Python package editable into the workspace venv and
-run the Pico 2 public-mock flash bring-up experiment:
+Use the controller API directly from Python. The configuration in
+[`configs/pico2_bench.yml`](configs/pico2_bench.yml) preserves the configured
+build paths and Pico probe serials.
 
 ```sh
 source ../.venv/bin/activate
 pip install -e .
+python - <<'PYCODE'
+from pathlib import Path
+
+from flatsat_controller.assembly import assemble_bench
+from flatsat_controller.config import load_config
+from flatsat_controller.runtime import ProcessGroup, RunContext, create_run_dir
+
+config = load_config(Path("configs/pico2_bench.yml"))
+run_dir = create_run_dir(Path("runs"), "manual")
+runtime = RunContext(run_dir, ProcessGroup())
+try:
+    bench = assemble_bench(runtime, config)
+    artifact = bench.firmware.build(config.builds["emulator"])
+    bench.firmware.flash(bench.targets["imu0"], artifact)
+finally:
+    cleanup_errors = runtime.close()
+    if cleanup_errors:
+        raise RuntimeError("; ".join(cleanup_errors))
+PYCODE
+```
+
+`bench` exposes firmware, named targets, operator prompts, and the simulation
+link. Use `dataclasses.replace` to customize a build request, and
+`bench.firmware.build_and_flash(target, request)` when both operations should run
+together. With `simulation_link` configured,
+`bench.simulation_link.observe(...)` subscribes to Bridge frames and records
+them to the run directory.
+
+Experiments have a separate command. The existing public mock experiment selects
+`CONSOLE=logs` and flashes using the configured OpenOCD executable.
+
+```sh
 flatsat run flash-public-mock --config configs/pico2_public_mock.yml
 ```
 
-Run artifacts land under `runs/` (override with `--runs-root`). The experiment
-builds with `CONSOLE=logs` and flashes through the OpenOCD binary in the config
-(`west flash -r openocd --openocd …`). Unit tests: `python -m unittest discover -s tests -v`.
+Experiment artifacts land under `runs/`. Use `--runs-root` to choose a different
+location. Each build and flash has a numbered directory under `operations/`
+containing its logs and command metadata. Experiments also record their
+parameters and result.
 
-Each build/flash has its own numbered directory under `operations/`, preserving
-repeated builds and logs. `installation.json`, `parameters.json`, and
-`actions.jsonl` retain the effective inputs and actions. Existing config YAML
-still works; [controller design](CONTROLLER_DESIGN.md) shows named builds and
-per-target probe serial configuration. Experiment code uses
-`bench.firmware.build(request)`, `bench.firmware.flash(target, artifact)`, and
-`bench.operator.confirm(message)`.
-
-The build uses the flight-software checkout's own `west` (see `app_root` in the
-config), not the FlatSat workspace Zephyr tree. `app_root` is resolved relative to
-the config file and must point at the `perovsat-app` directory. A completed run only
-means the build and flash steps finished; it is not a PASS/FAIL test verdict.
+Run host tests with `python -m unittest discover -s tests -v`.
 
 ## Design
 
@@ -193,3 +216,49 @@ The bootstrap west version is pinned directly in `setup-workspace.sh`.
 Full host installation, Docker builds, and physical flashing require their
 respective prerequisites. See [SETUP_PLAN.md](SETUP_PLAN.md) for the implementation
 scope and remaining daemon/probe inputs.
+
+# MPU6050 simulation A/B check
+
+The registered `mpu6050-ab` experiment sends two SI-unit samples through the
+bridge, polls device status, then checks complete 14-byte MPU6050 reads logged
+by the normal OBC. It compares the returned bus bytes and sample sequence with
+the configured accel and gyro ranges. A mismatch, capture loss, flagged or
+truncated transaction, or timeout invalidates the run. This is a sensor-bus
+readback check and does not provide a flight telemetry verdict.
+
+Start the bridge with the emulator on its serial link. For example, save this
+as the bridge config and replace the serial port with the emulator's port:
+
+```yaml
+listen: 127.0.0.1:4242
+devices:
+  - name: imu0
+    address: 1
+    port: /dev/cu.usbmodem102 # replace with the emulator's serial port
+```
+
+The OBC is not a bridge device; it connects electrically to the emulator's
+MPU6050 I²C pins. Before running the experiment, have the OBC connected and
+running its MPU6050 application, then run from the workspace:
+
+```sh
+flatsat run mpu6050-ab --config flatsat-controller/configs/mpu6050_ab.yml
+```
+
+The example expects the bridge TCP listener at `127.0.0.1:4242`, controller
+source address 253, and emulator device address 1. Edit `simulation_link` for
+the listener and addresses in use. Edit `experiment` to select `accel_range_g`
+(2, 4, 8, or 16), `gyro_range_dps` (250, 500, 1000, or 2000), timeout, and the
+two stimuli. Acceleration is m/s², angular rate is rad/s, and temperature is
+°C. The timeout applies independently to adoption and each sensor read.
+
+Wire the OBC I²C0 GP4/SDA and GP5/SCL pins to the emulator's matching pins, with
+common ground and shared external 2.2 kΩ pull-ups to 3.3 V. The emulated MPU6050
+responds at I²C address `0x68`. Ensure the OBC firmware is configured for this
+bus and address. The experiment does not flash or configure the OBC.
+
+Original frame payloads are captured as hex and base64 in
+`simulation-frames.jsonl` in the run directory, including frames received while
+status is being polled. No physical device is required for host tests. The
+current workspace does not have the OBC attached; the experiment is ready to
+run when the OBC and bridge are connected.

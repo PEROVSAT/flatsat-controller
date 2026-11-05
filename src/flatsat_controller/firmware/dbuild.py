@@ -56,12 +56,20 @@ def dbuild_argv(
     ]
 
 
+def build_argv(west: Path, *, board: str, app_root: Path, build_dir: Path) -> list[str]:
+    return [
+        str(west.resolve()), "build", "-b", board, "-d",
+        str(build_dir.resolve()), str(app_root.resolve()),
+    ]
+
+
 def flash_argv(
     west: Path, *, build_dir: Path, openocd: Path, probe_serial: str | None = None
 ) -> list[str]:
     argv = [
         str(west.resolve()),
         "flash",
+        "--no-rebuild",
         "-d",
         str(build_dir.resolve()),
         "-r",
@@ -71,12 +79,17 @@ def flash_argv(
     ]
 
     if probe_serial is not None:
-        if not re.fullmatch(r"[A-Za-z0-9_.:-]+", probe_serial):
-            raise FlatsatError(
-                "probe_serial must contain only letters, digits, _, ., :, or -"
-            )
+        validate_probe_serial(probe_serial)
         argv.extend(["--cmd-pre-init", f"adapter serial {probe_serial}"])
     return argv
+
+
+def validate_probe_serial(probe_serial: str | None) -> None:
+    if probe_serial is not None and (
+        not isinstance(probe_serial, str)
+        or not re.fullmatch(r"[A-Za-z0-9_.:-]+", probe_serial)
+    ):
+        raise FlatsatError("probe_serial must contain only letters, digits, _, ., :, or -")
 
 
 def flight_env(west: Path) -> dict[str, str]:

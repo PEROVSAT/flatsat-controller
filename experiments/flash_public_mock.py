@@ -1,6 +1,6 @@
 from __future__ import annotations
 from flatsat_controller.bench import Bench
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from flatsat_controller.config import ControllerConfig
 from flatsat_controller.types import FlatsatError
 from flatsat_controller.firmware import BuildRequest, load_dbuild
@@ -36,9 +36,7 @@ def run(bench: Bench, parameters: PublicMockParameters) -> None:
         catalog,
         roles={"FLASH": parameters.flash_mode, "CONSOLE": parameters.console_mode},
     )
-    request = BuildRequest(
-        parameters.build.app_root, parameters.build.board, selections
-    )
+    request = replace(parameters.build, selections=selections, kind="dbuild")
     if bench.firmware is None:
         raise RuntimeError("This experiment requires firmware capability")
     artifact = bench.firmware.build(request)

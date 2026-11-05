@@ -1,15 +1,13 @@
 # FlatSat controller implementation
 
-The current controller builds and flashes firmware and records manual operator
-confirmations. Experiments are synchronous Python functions with explicit
-registration in `experiments/__init__.py`. Bridge, observations, radio decoding,
-and Basilisk integration remain future work; no placeholder capabilities exist.
+Experiments are synchronous Python functions with explicit registration in
+`experiments/__init__.py`. Manual workflows assemble the same bench API directly
+in Python and manage a `RunContext` for operation records and cleanup.
 
 ## Boundaries
 
-`Bench` is a typed collection: `firmware`, `targets`, and `operator`. It owns no
-workflow, resource lifecycle, subprocess execution, or experiment policy. A bench
-can contain only operator capability; firmware and targets are optional.
+`Bench` exposes firmware, named targets, operator prompts, and the simulation
+link. Assembly provides the capabilities configured for the installation.
 
 `runtime/` owns run folders, numbered operation folders, action recording,
 parameter snapshots, prompts, subprocess lifetime, and final results. It has no
@@ -18,11 +16,10 @@ knowledge of Zephyr, dbuild, OpenOCD, applications, or radio. The public
 creates a runtime, invokes the factory and experiment inside the cleanup scope,
 then writes the result, preserving cleanup errors alongside the original error.
 
-`firmware/` owns BuildRequest, FirmwareArtifact, tools and logical target types,
-dbuild generation and commands, OpenOCD flashing, firmware failure diagnostics,
-and per-build source/configuration metadata. Firmware receives an executor and
-recording interface directly; it never receives Bench or an experiment. Public
-mock selection policy is an explicit preset in `firmware/presets.py`.
+`firmware/` owns build requests, artifacts, and targets. It builds with `west
+build` or `west dbuild` and flashes through the Pico 2 OpenOCD runner. It
+records command, source, and configuration metadata through runtime interfaces.
+Public mock selection policy lives in `firmware/presets.py`.
 
 `assembly.py` is the single installation composition point. It wires runtime
 services into capabilities, records installation metadata, and returns Bench.
@@ -31,7 +28,7 @@ experiment parameter mapping. Each explicitly registered experiment supplies its
 own parameter parser and typed parameters; new experiments do not change the
 shared config loader. An operator-only experiment needs neither app nor tools.
 
-## Experiment API
+## Firmware API
 
 ```python
 def run(bench, parameters):
@@ -40,20 +37,21 @@ def run(bench, parameters):
     bench.firmware.flash(bench.targets[parameters.target], artifact)
 ```
 
-Build requests identify their own app directory, board, and immutable selection
-snapshot. Repeated builds, including builds from different applications, receive
-independent numbered operation directories. Flash uses the artifact's application
-as its working directory and checks target/artifact board compatibility.
+Build requests specify an app directory and a build kind. A dbuild request can
+override the app's device selections. Repeated builds receive independent
+numbered operation directories. Flash programs the existing artifact using its
+recorded app directory and `west` executable. Use
+`firmware.build_and_flash(target, request)` when both steps should run together.
 
-Logical targets identify a board and optionally a probe serial. Explicit serials
-use OpenOCD `adapter serial` before initialization via west's `--cmd-pre-init`.
-Serials accept letters, digits, `_`, `.`, `:`, and `-`; other values are rejected
-before a flashing subprocess starts. Omitting serial preserves the existing
-single-probe runner default. A target cannot ensure physical wiring is correct.
+Logical target names identify physical Pico 2 boards by the serial numbers of
+their debug probes. West passes `adapter serial` to OpenOCD before initialization
+via `--cmd-pre-init`. Multiple targets require distinct explicit serials.
+Omitting a serial preserves the existing single-probe runner default.
 
 ## Configuration
 
-One YAML file still carries distinct installation, build, and experiment data:
+One YAML file carries installation settings, named builds, and optional
+experiment parameters.
 
 ```yaml
 west: /flight/.venv/bin/west
@@ -65,7 +63,9 @@ targets:
 builds:
   nominal:
     app_root: /flight/perovsat-app
-    board: rpi_pico2/rp2350a/m33
+    kind: dbuild
+    selections:
+      CONSOLE: logs
 experiment:
   build: nominal
   target: obc
@@ -74,20 +74,33 @@ experiment:
 ```
 
 Paths resolve relative to the YAML file. Existing top-level `app_root`, `board`,
-`west`, and `openocd` config remains accepted: it becomes build `default` and,
+`west`, and `openocd` config remains accepted. It becomes build `default` and,
 when targets are absent, target `obc`. Missing west for that default build uses
 the existing flight checkout's `.venv/bin/west` convention. Empty configuration
 `{}` is valid for experiments requiring only operator capability.
+
+Use `kind: build` for a plain Zephyr app. A build can specify its own `west`
+path when the bench uses apps from different workspaces. Named builds need
+that path when the config has neither a top-level `west` nor a default build.
 
 Public-mock parameters select a named build and target, then choose device modes
 through the explicit preset. Generic build execution never imposes that policy.
 The example experiment retains its historical CONSOLE=logs and FLASH=pico2.
 
+## Programmatic manual workflows
+
+Load a bench config, allocate a run directory, create a `RunContext` with a
+`ProcessGroup`, and pass both to `assemble_bench`. Use `try/finally` to call
+`runtime.close()` so child processes and logs are cleaned up. The API supports
+build, flash, operator prompts, and `SimulationLink.observe`; no registered
+experiment is required for manual bring-up.
+
 ## Evidence and cleanup
 
 A run contains `installation.json`, `parameters.json`, `actions.jsonl`, and
-`result.json`. Each build operation contains `dbuild.yml`, `build.json`,
-`build.log`, and its build output; flash operations contain `flash.log`. Build
+`result.json`. Each build operation contains `build.json`, `build.log`, and its
+build output. Dbuild operations also capture `dbuild.yml`. Flash operations
+contain `flash.json` and `flash.log`. Build
 metadata includes app, board, selections, command, and git revision/dirty status.
 Actions refer to operation paths and flash artifact/target identity. Interrupted
 or failed command launches are recorded as errors before propagation.

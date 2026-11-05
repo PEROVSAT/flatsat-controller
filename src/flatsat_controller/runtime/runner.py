@@ -24,8 +24,7 @@ def run_experiment(
     processes: ProcessOwner | None = None,
     bench_factory: Callable[[RunContext], BenchT],
 ) -> ExperimentResult:
-    run_dir = _allocate_run_dir(runs_root, name)
-    run_dir.mkdir(parents=True, exist_ok=False)
+    run_dir = create_run_dir(runs_root, name)
 
     group = processes if processes is not None else ProcessGroup()
     runtime = RunContext(run_dir, group)
@@ -75,15 +74,24 @@ def run_experiment(
     return result
 
 
-def _allocate_run_dir(runs_root: Path, name: str) -> Path:
+def create_run_dir(runs_root: Path, name: str) -> Path:
+    """Create a uniquely named run/session directory and return its path."""
+    runs_root = runs_root.resolve()
+    runs_root.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     base = runs_root / f"{ts}-{name}"
-    if not base.exists():
+    try:
+        base.mkdir(parents=True, exist_ok=False)
         return base
+    except FileExistsError:
+        pass
     for i in range(1, 10000):
         candidate = runs_root / f"{ts}-{name}-{i}"
-        if not candidate.exists():
+        try:
+            candidate.mkdir(parents=True, exist_ok=False)
             return candidate
+        except FileExistsError:
+            continue
     raise FlatsatError(f"Could not allocate run directory under {runs_root}")
 
 

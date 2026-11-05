@@ -11,6 +11,7 @@ from .flash_public_mock import (
     run as flash_public_mock,
     parameters as public_mock_parameters,
 )
+from .mpu6050_ab import run as mpu6050_ab, parameters as mpu6050_ab_parameters
 
 
 ParametersT = TypeVar("ParametersT")
@@ -24,4 +25,5 @@ class Experiment(Generic[ParametersT]):
 
 EXPERIMENTS = {
     "flash-public-mock": Experiment(flash_public_mock, public_mock_parameters),
+    "mpu6050-ab": Experiment(mpu6050_ab, mpu6050_ab_parameters),
 }

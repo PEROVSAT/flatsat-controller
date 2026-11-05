@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "flatsat-controller"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["PyYAML"]
+dependencies = ["PyYAML", "hitl-bridge>=0.1.0"]
 
 [project.scripts]
 flatsat = "flatsat_controller.cli:main"
