@@ -12,6 +12,7 @@ from .flash_public_mock import (
     parameters as public_mock_parameters,
 )
 from .mpu6050_ab import run as mpu6050_ab, parameters as mpu6050_ab_parameters
+from .bridge_utc import run as bridge_utc, parameters as bridge_utc_parameters
 
 
 ParametersT = TypeVar("ParametersT")
@@ -26,4 +27,5 @@ class Experiment(Generic[ParametersT]):
 EXPERIMENTS = {
     "flash-public-mock": Experiment(flash_public_mock, public_mock_parameters),
     "mpu6050-ab": Experiment(mpu6050_ab, mpu6050_ab_parameters),
+    "bridge-utc": Experiment(bridge_utc, bridge_utc_parameters),
 }

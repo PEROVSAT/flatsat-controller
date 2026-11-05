@@ -7,6 +7,7 @@ from flatsat_controller.types import FlatsatError
 from flatsat_controller.firmware import FirmwareTools, Target, BuildRequest, validate_probe_serial
 from flatsat_controller.simulation import SimulationLinkConfig
 from flatsat_controller.firmware.types import PICO2_BOARD
+from hitl_bridge.bridge import BridgeConfig, load_config as load_bridge_config
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,7 @@ class ControllerConfig:
     builds: Mapping[str, BuildRequest] = field(default_factory=dict)
     experiment: Mapping[str, object] = field(default_factory=dict)
     simulation_link: SimulationLinkConfig | None = None
+    bridge_config: BridgeConfig | None = None
 
 
 def load_config(path: Path) -> ControllerConfig:
@@ -40,6 +42,7 @@ def load_config(path: Path) -> ControllerConfig:
         "builds",
         "experiment",
         "simulation_link",
+        "bridge_config",
     }
     if unknown:
         raise FlatsatError(f"Unknown config keys {sorted(unknown)} in {config_path}")
@@ -153,7 +156,15 @@ def load_config(path: Path) -> ControllerConfig:
             link = SimulationLinkConfig.from_mapping(link_data)
         except ValueError as exc:
             raise FlatsatError(f"Invalid simulation_link: {exc}") from exc
-    return ControllerConfig(Installation(tools, targets), builds, experiment, link)
+    bridge_data = raw.get("bridge_config")
+    bridge = None
+    if bridge_data is not None:
+        bridge_path = _resolve_path(bridge_data, base)
+        try:
+            bridge = load_bridge_config(bridge_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise FlatsatError(f"Invalid bridge_config: {exc}") from exc
+    return ControllerConfig(Installation(tools, targets), builds, experiment, link, bridge)
 
 
 def _resolve_path(value: object, base: Path) -> Path:

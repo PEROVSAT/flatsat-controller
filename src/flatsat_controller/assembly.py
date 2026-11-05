@@ -8,6 +8,7 @@ from flatsat_controller.bench import Bench
 from flatsat_controller.firmware import Firmware
 from flatsat_controller.runtime import Operator
 from flatsat_controller.simulation import SimulationLink
+from flatsat_controller.bridge import Bridge
 
 
 def assemble_bench(
@@ -31,4 +32,5 @@ def assemble_bench(
             if config.simulation_link
             else None
         ),
+        bridge=(Bridge(config.bridge_config, runtime) if config.bridge_config else None),
     )

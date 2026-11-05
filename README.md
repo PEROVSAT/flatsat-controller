@@ -47,6 +47,23 @@ Experiments have a separate command. The existing public mock experiment selects
 flatsat run flash-public-mock --config configs/pico2_public_mock.yml
 ```
 
+`bridge-utc` builds and flashes the emulator to the `imu0` board resolved from
+the bridge inventory, then checks for a clock correction and two consecutive
+UTC reports within tolerance. The inventory contains the board's explicit SWD
+probe serial and its simulation UART; no OBC target is needed. Update the
+example paths and identities for the bench, stop any other program using the IMU
+UART, then run:
+
+```sh
+flatsat run bridge-utc --config configs/bridge_utc.yml
+```
+
+By default the check allows 20 seconds for two consecutive accepted UTC reports
+within 10 ms, including a correction from the bridge. The run directory includes
+accepted exchange evidence in `utc_evidence.json` and bridge output in
+`bridge-utc.log`. Timeout and tolerance can be adjusted in the config's
+`experiment` mapping.
+
 Experiment artifacts land under `runs/`. Use `--runs-root` to choose a different
 location. Each build and flash has a numbered directory under `operations/`
 containing its logs and command metadata. Experiments also record their
@@ -99,14 +116,13 @@ The shell you launched setup from retains its previous working directory. After
 setup, use the printed `cd` command for the new location. Expect several gigabytes
 of downloads for Zephyr, its SDK, and the Basilisk Docker image.
 
-The host `.venv` contains Zephyr tools and eventual controller/daemon Python
-dependencies. Basilisk uses its own Docker image and container venv, built through
+The host `.venv` contains Zephyr tools and controller/bridge Python dependencies.
+Basilisk uses its own Docker image and container venv, built through
 its existing Makefile. Setup runs `make smoke` to compile/import the plugins;
 it does not enter a container shell or run an experiment.
 
-Dependencies are pinned in [west.yml](west.yml). The MPU6050 repository is cloned
-but currently has no application code. The daemon will be added once its
-repository is available. Git authentication for all manifest repositories must
+Dependencies are pinned in [west.yml](west.yml). The MPU6050 emulator and HITL
+bridge are included as workspace projects. Git authentication for all manifest repositories must
 already work; setup does not store credentials.
 
 ## Daily use and updates
@@ -168,8 +184,8 @@ the Basilisk repository; source commit pins are not a full package/image lock.
 
 ## Pico 2 build and flash
 
-Activate the host venv and work from the workspace root. Until the emulator has
-an application, verify the toolchain with Zephyr blinky:
+Activate the host venv and work from the workspace root. To verify the toolchain
+independently of the emulator firmware, build Zephyr blinky:
 
 ```sh
 west build -b rpi_pico2/rp2350a/m33 -d build/pico2-smoke \
@@ -183,7 +199,7 @@ west flash -d build/pico2-smoke -r uf2
 ```
 
 Alternatively copy `build/pico2-smoke/zephyr/zephyr.uf2` onto the mounted RP2350
-BOOTSEL drive. Once the emulator application exists at its repository root:
+BOOTSEL drive. To build the emulator application from its repository root:
 
 ```sh
 west build -b rpi_pico2/rp2350a/m33 -d build/mpu6050 emulated-devices/mpu6050

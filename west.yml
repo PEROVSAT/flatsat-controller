@@ -17,17 +17,16 @@ manifest:
     - name: basilisk-simulation
       remote: origin
       revision: 2c02fb347ac6e5492b3f11f0b09fe662526880fd
-    # Repository exists; the Zephyr application will be added separately.
 
     - name: mpu6050-emulator
       remote: origin
       path: emulated-devices/mpu6050
-      revision: 563eed96e558550885adcbf0c3748bd965b366d3
+      revision: cde0e6f19aa68e6bb5ed39257c95cb0288df2422
 
     - name: hitl-bridge
       remote: origin
       path: hitl-bridge
-      revision: 5a651b0bb16bea64b57e15f45fe34b6364ac4ca4
+      revision: 750e18f3dcb157fafbbed82a04f61b28bd5b249e
 
     - name: perovsat-protocol
       remote: origin
