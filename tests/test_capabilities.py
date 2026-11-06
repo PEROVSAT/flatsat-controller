@@ -24,6 +24,23 @@ from test_runner import FakeProcessGroup, DBUILD_SOURCE
 
 
 class CapabilityTests(unittest.TestCase):
+    def test_config_init_writes_editable_valid_yaml_without_overwriting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "flatsat-controller").mkdir()
+            (root / ".west").mkdir()
+            (root / ".west" / "config").touch()
+            with patch("flatsat_controller.cli.find_workspace", return_value=root):
+                main(["config", "init"])
+                content = (root / "bench.yml").read_text()
+                parsed = yaml.safe_load(content)
+                self.assertEqual(parsed["tools"], {"openocd": None})
+                self.assertEqual(parsed["flight"], {"app_root": None, "west": None})
+                with self.assertRaises(SystemExit) as caught:
+                    main(["config", "init"])
+                self.assertEqual(caught.exception.code, 1)
+                self.assertEqual((root / "bench.yml").read_text(), content)
+
     def test_operator_and_runner_require_no_firmware_installation(self):
         with tempfile.TemporaryDirectory() as tmp:
             fake = FakeProcessGroup()
@@ -59,34 +76,27 @@ class CapabilityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config = root / "bench.yml"
-            config.write_text("experiment:\n  message: Check bench\n")
+            (root / "flatsat-controller").mkdir()
+            (root / ".west").mkdir()
+            (root / ".west" / "config").touch()
+            config.write_text("devices: {}\n")
 
             @dataclass(frozen=True)
             class Parameters:
                 message: str
 
             def experiment(bench, params):
-                self.assertIsNone(bench.firmware)
                 bench.operator.confirm(params.message)
 
-            entry = Experiment(
-                experiment, lambda config: Parameters(**config.experiment)
-            )
+            entry = Experiment(experiment, lambda config: Parameters("Check bench"), "manual")
             with patch.dict("flatsat_controller.cli.EXPERIMENTS", {"manual": entry}):
-                with self.assertRaises(SystemExit) as caught:
-                    main(
-                        [
-                            "run",
-                            "manual",
-                            "--config",
-                            str(config),
-                            "--runs-root",
-                            str(root / "runs"),
-                            "--yes",
-                        ]
-                    )
+                with patch("flatsat_controller.cli.find_workspace", return_value=root):
+                    with self.assertRaises(SystemExit) as caught:
+                        main(["run", "manual", "--yes"])
                 self.assertEqual(caught.exception.code, 0)
-            result = next((root / "runs").glob("*/result.json"))
+            default_runs = root / "flatsat-controller" / "experiments" / "manual" / "runs"
+            result = next(default_runs.glob("*/result.json"))
+            self.assertRegex(result.parent.name, r"^\d{8}T\d{6}Z(?:-\d+)?$")
             self.assertEqual(json.loads(result.read_text())["status"], "completed")
 
     def test_cli_displays_failed_and_invalid_verdicts_and_exits_nonzero(self):
@@ -98,11 +108,15 @@ class CapabilityTests(unittest.TestCase):
             root = Path(tmp)
             config = root / "bench.yml"
             config.write_text("{}\n")
-            entry = Experiment(lambda *_: None, lambda _: None)
+            (root / "flatsat-controller").mkdir(exist_ok=True)
+            (root / ".west").mkdir(exist_ok=True)
+            (root / ".west" / "config").touch()
+            (root / "bench.yml").write_text("devices: {}\n")
+            entry = Experiment(lambda *_: None, lambda _: None, "manual")
             for verdict in ("fail", "invalid"):
                 with self.subTest(verdict=verdict):
                     result = ExperimentResult(
-                        "mpu6050-ab",
+                        "manual",
                         "completed",
                         verdict,
                         ("readback did not satisfy the run criteria",),
@@ -113,25 +127,17 @@ class CapabilityTests(unittest.TestCase):
                     with (
                         patch.dict(
                             "flatsat_controller.cli.EXPERIMENTS",
-                            {"mpu6050-ab": entry},
+                            {"manual": entry},
                         ),
                         patch(
                             "flatsat_controller.cli.run_experiment",
                             return_value=result,
                         ),
+                        patch("flatsat_controller.cli.find_workspace", return_value=root),
                         contextlib.redirect_stdout(stdout),
                     ):
                         with self.assertRaises(SystemExit) as caught:
-                            main(
-                                [
-                                    "run",
-                                    "mpu6050-ab",
-                                    "--config",
-                                    str(config),
-                                    "--runs-root",
-                                    str(root / "runs"),
-                                ]
-                            )
+                            main(["run", "manual", "--runs-root", str(root / "runs")])
                     self.assertEqual(caught.exception.code, 1)
                     self.assertIn(f"verdict: {verdict}", stdout.getvalue())
                     self.assertIn("readback did not satisfy", stdout.getvalue())
@@ -201,18 +207,6 @@ class CapabilityTests(unittest.TestCase):
                 openocd=Path("/openocd"),
                 probe_serial="x; shutdown",
             )
-
-    def test_explicit_targets_config_and_build_requests(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            config = root / "bench.yml"
-            config.write_text(
-                "west: ./west\nbuilds:\n  sensor:\n    app_root: .\n    board: rpi_pico2/rp2350a/m33\ntargets:\n  imu0:\n    board: rpi_pico2/rp2350a/m33\n    probe_serial: 123ABC\n"
-            )
-            loaded = load_config(config)
-            self.assertEqual(loaded.installation.targets["imu0"].probe_serial, "123ABC")
-            self.assertEqual(loaded.builds["sensor"].app_root, root.resolve())
-            self.assertEqual(loaded.experiment, {})
 
     def test_factory_failure_is_finalized_and_cleanup_failure_retained(self):
         class BrokenClose(FakeProcessGroup):
@@ -329,8 +323,11 @@ class CleanupFailureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config = root / "bench.yml"
-            config.write_text("{}")
-            entry = Experiment(lambda *_: None, lambda _: None)
+            (root / "flatsat-controller").mkdir()
+            (root / ".west").mkdir()
+            (root / ".west" / "config").touch()
+            config.write_text("devices: {}")
+            entry = Experiment(lambda *_: None, lambda _: None, "manual")
             result = ExperimentResult(
                 "manual", "failed", "pass", (), root, ("child did not stop",)
             )
@@ -338,11 +335,12 @@ class CleanupFailureTests(unittest.TestCase):
             with (
                 patch.dict("flatsat_controller.cli.EXPERIMENTS", {"manual": entry}),
                 patch("flatsat_controller.cli.run_experiment", return_value=result),
+                patch("flatsat_controller.cli.find_workspace", return_value=root),
                 contextlib.redirect_stderr(output),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 with self.assertRaises(SystemExit) as caught:
-                    main(["run", "manual", "--config", str(config)])
+                    main(["run", "manual"])
             self.assertEqual(caught.exception.code, 1)
             self.assertIn("cleanup error: child did not stop", output.getvalue())
 

@@ -7,37 +7,44 @@ import tempfile
 import threading
 import time
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
-from flatsat_controller.bench import Bench
-from flatsat_controller.config import ControllerConfig, Installation
-from flatsat_controller.firmware import BuildRequest, FirmwareTools, Target, Firmware
+from flatsat_controller.config import BenchConfig as BenchSettings, Device
+from flatsat_controller.firmware import BuildRequest, FirmwareTools, Firmware
 from flatsat_controller.assembly import assemble_bench
-from flatsat_controller.runtime import RunContext, Operator
-from experiments.flash_public_mock import (
-    PublicMockParameters,
-    parameters as parse_parameters,
-)
+from flatsat_controller.runtime import RunContext
 from flatsat_controller.processes import ProcessGroup
 from flatsat_controller.runner import run_experiment
 from flatsat_controller.types import FlatsatError, Verdict
 
 
 def BenchConfig(*, app_root, board, west, openocd=None):
-    tools = FirmwareTools(west) if openocd is None else FirmwareTools(west, openocd)
-    return ControllerConfig(
-        Installation(tools, {"obc": Target("obc", board)}),
-        {"default": BuildRequest(app_root, board)},
+    tools = FirmwareTools(west, west if openocd is None else openocd)
+    return BenchSettings(
+        workspace=app_root.parent,
+        devices={"obc": Device("obc", "OBC-SERIAL")},
+        tools=tools,
+        flight_app=app_root,
+        west=west,
     )
 
 
+@dataclass(frozen=True)
+class GenericParameters:
+    build: BuildRequest
+
+
 def run_installed(name, func, config, **kwargs):
+    parameters = GenericParameters(
+        BuildRequest(config.flight_app, "rpi_pico2/rp2350a/m33", kind="dbuild", west=config.flight_west)
+    )
     return run_experiment(
         name,
         func,
-        parse_parameters(config),
+        parameters,
         bench_factory=lambda runtime: assemble_bench(runtime, config),
         **kwargs,
     )
@@ -49,7 +56,7 @@ DBUILD_SOURCE = {
         "IMU": {"modes": {"public-mock": {}}},
         "AMU": {"modes": {"public-mock": {}}},
         "FLASH": {"modes": {"virtual": {}, "pico2": {}}},
-        "CONSOLE": {"modes": {"no-console": {}, "usb": {}, "logs": {}}},
+        "CONSOLE": {"modes": {"no-console": {}, "usb": {}, "logs": {}, "uart": {}}},
     },
 }
 
@@ -119,8 +126,8 @@ class BenchBuildFailureTests(unittest.TestCase):
                         {
                             "IMU": "public-mock",
                             "AMU": "public-mock",
-                            "FLASH": "pico2",
-                            "CONSOLE": "usb",
+                    "FLASH": "pico2",
+                    "CONSOLE": "usb",
                         },
                     )
                 )
@@ -145,71 +152,32 @@ class BenchBuildFailureTests(unittest.TestCase):
 
 
 class SuccessfulExperimentTests(unittest.TestCase):
-    def test_flash_public_mock_flow(self) -> None:
+    def test_generic_experiment_records_result_and_parameters(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             app = root / "app"
             app.mkdir()
-            (app / "dbuild.yml").write_text(yaml.safe_dump(DBUILD_SOURCE))
             west = root / "west"
             west.write_text("#!/bin/sh\n")
             west.chmod(0o755)
-            openocd = root / "openocd"
-            openocd.write_text("#!/bin/sh\n")
-            openocd.chmod(0o755)
-            cfg = BenchConfig(
-                app_root=app, board="rpi_pico2", west=west, openocd=openocd
-            )
-            fake = FakeProcessGroup(returncode=0)
+            cfg = BenchConfig(app_root=app, board="rpi_pico2", west=west)
 
-            from experiments.flash_public_mock import run as flash_public_mock
+            def exp(_bench, parameters):
+                self.assertEqual(parameters.build.app_root, app)
+                return Verdict("pass", ("generic sequence complete",))
 
             result = run_installed(
-                "flash-public-mock",
-                flash_public_mock,
+                "generic",
+                exp,
                 cfg,
                 runs_root=root / "runs",
-                processes=fake,
+                processes=FakeProcessGroup(),
             )
-
             self.assertEqual(result.status, "completed")
-            self.assertIsNone(result.verdict)
-            actions = [
-                json.loads(line)["action"]
-                for line in (result.run_dir / "actions.jsonl").read_text().splitlines()
-            ]
-            self.assertEqual(actions, ["build", "flash"])
-
-            dbuild = yaml.safe_load(
-                (result.run_dir / "operations/0001-build/dbuild.yml").read_text()
-            )
-            self.assertEqual(
-                dbuild["selections"],
-                {
-                    "IMU": "public-mock",
-                    "AMU": "public-mock",
-                    "FLASH": "pico2",
-                    "CONSOLE": "logs",
-                },
-            )
-            image = (
-                result.run_dir / "operations/0001-build/build" / "zephyr" / "zephyr.hex"
-            )
-            self.assertTrue(image.is_file())
-            flash_record = next(r for r in fake.records if "flash" in r["argv"])
-            self.assertEqual(
-                flash_record["argv"][flash_record["argv"].index("--openocd") + 1],
-                str(openocd.resolve()),
-            )
-
-            build_record = next(r for r in fake.records if "dbuild" in r["argv"])
-            env = build_record["env"]
-            self.assertNotIn("ZEPHYR_BASE", env)
-            west_parent = str(west.resolve().parent)
-            self.assertTrue(
-                env["PATH"].startswith(west_parent + os.pathsep),
-                env["PATH"],
-            )
+            self.assertEqual(result.verdict, "pass")
+            self.assertEqual(result.reasons, ("generic sequence complete",))
+            self.assertTrue((result.run_dir / "parameters.json").is_file())
+            self.assertTrue((result.run_dir / "result.json").is_file())
 
 
 class ExperimentReturnTests(unittest.TestCase):

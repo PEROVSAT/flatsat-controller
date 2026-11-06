@@ -14,73 +14,9 @@ from flatsat_controller.firmware import (
     flash_argv,
     flight_env,
     load_dbuild,
-    public_mock_selections,
     write_dbuild,
 )
 from flatsat_controller.types import FlatsatError
-
-REAL_DEVICES = {
-    "IMU": {
-        "modes": {
-            "public-mock": {},
-            "library-mock": {},
-            "simulation": {},
-            "hardware": {},
-        }
-    },
-    "AMU": {
-        "modes": {
-            "public-mock": {},
-            "library-mock": {},
-            "hardware": {},
-        }
-    },
-    "FLASH": {"modes": {"virtual": {}, "pico2": {}}},
-    "CONSOLE": {"modes": {"no-console": {}, "usb": {}, "logs": {}}},
-}
-
-
-class PublicMockSelectionsTests(unittest.TestCase):
-    def test_real_catalog_defaults_and_roles(self) -> None:
-        sel = public_mock_selections(
-            REAL_DEVICES,
-            roles={"FLASH": "pico2", "CONSOLE": "logs"},
-        )
-        self.assertEqual(
-            sel,
-            {
-                "IMU": "public-mock",
-                "AMU": "public-mock",
-                "FLASH": "pico2",
-                "CONSOLE": "logs",
-            },
-        )
-
-    def test_no_public_mock_and_no_role_raises(self) -> None:
-        devices = {"SENSOR": {"modes": {"hardware": {}}}}
-        with self.assertRaises(FlatsatError) as ctx:
-            public_mock_selections(devices, roles={})
-        self.assertIn("SENSOR", str(ctx.exception))
-
-    def test_invalid_role_mode_raises(self) -> None:
-        with self.assertRaises(FlatsatError) as ctx:
-            public_mock_selections(REAL_DEVICES, roles={"FLASH": "public-mock"})
-        self.assertIn("FLASH", str(ctx.exception))
-
-    def test_unknown_device_role_raises(self) -> None:
-        with self.assertRaises(FlatsatError) as ctx:
-            public_mock_selections(REAL_DEVICES, roles={"TYPO": "public-mock"})
-        self.assertIn("TYPO", str(ctx.exception))
-
-    def test_explicit_role_overrides_public_mock(self) -> None:
-        devices = {
-            "IMU": REAL_DEVICES["IMU"],
-            "AMU": REAL_DEVICES["AMU"],
-        }
-        sel = public_mock_selections(devices, roles={"IMU": "hardware"})
-        self.assertEqual(sel["IMU"], "hardware")
-        self.assertEqual(sel["AMU"], "public-mock")
-
 
 class WriteDbuildTests(unittest.TestCase):
     def test_replaces_selections_keeps_devices(self) -> None:
@@ -166,112 +102,39 @@ class ArgvAndEnvTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
-    def test_relative_app_root_against_config_dir(self) -> None:
+    def _workspace(self, root: Path) -> None:
+        (root / "flatsat-controller").mkdir(exist_ok=True)
+        (root / ".west").mkdir(exist_ok=True)
+        (root / ".west" / "config").touch()
+
+    def test_logical_devices_and_flight_tool_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            app = root / "app"
-            app.mkdir()
+            self._workspace(root)
+            (root / "app").mkdir()
             cfg_path = root / "bench.yml"
-            cfg_path.write_text("app_root: ./app\nboard: rpi_pico2\n")
+            cfg_path.write_text("flight: {app_root: ./app, west: ./flight-west}\ndevices:\n  imu: {probe_serial: ABC, uart: /dev/ttyUSB0, address: 1}\n  obc: {probe_serial: null}\n")
             cfg = load_config(cfg_path)
-            self.assertEqual(cfg.builds["default"].app_root, app.resolve())
-
-    def test_unknown_keys_error(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            cfg_path = Path(tmp) / "bench.yml"
-            cfg_path.write_text("app_root: .\nboard: x\nextra: 1\n")
+            self.assertEqual(cfg.require_target("imu").probe_serial, "ABC")
+            self.assertEqual(cfg.require_uart("imu").address, 1)
+            self.assertEqual(cfg.require_flight_app(), (root / "app").resolve())
+            self.assertEqual(cfg.flight_west, (root / "flight-west").resolve())
+            self.assertEqual(cfg.tools.west, (root / ".venv/bin/west").resolve())
+            self.assertEqual(cfg.emulator_app, (root / "emulated-devices/mpu6050").resolve())
             with self.assertRaises(FlatsatError):
+                cfg.require_target("obc")
+
+    def test_duplicate_logical_device_keys_and_probe_serials_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._workspace(root)
+            cfg_path = root / "bench.yml"
+            cfg_path.write_text("devices:\n  imu: {address: 1}\n  imu: {address: 2}\n")
+            with self.assertRaisesRegex(FlatsatError, "duplicate key"):
                 load_config(cfg_path)
-
-    def test_named_build_kind_workspace_and_default_board(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "app").mkdir()
-            cfg_path = root / "bench.yml"
-            cfg_path.write_text("builds:\n  plain:\n    app_root: ./app\n    kind: build\n    west: ./west\n")
-            request = load_config(cfg_path).builds["plain"]
-            self.assertEqual(request.kind, "build")
-            self.assertEqual(request.west, (root / "west").resolve())
-            self.assertEqual(request.board, "rpi_pico2/rp2350a/m33")
-
-    def test_named_builds_cannot_inherit_another_builds_west(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "app").mkdir()
-            cfg_path = root / "bench.yml"
-            cfg_path.write_text(
-                "builds:\n  workspace_a:\n    app_root: ./app\n    west: ./west-a\n"
-                "  workspace_b:\n    app_root: ./app\n"
-            )
-            with self.assertRaisesRegex(FlatsatError, "Each named build needs west"):
+            cfg_path.write_text("devices:\n  imu: {probe_serial: ABC}\n  obc: {probe_serial: ABC}\n")
+            with self.assertRaisesRegex(FlatsatError, "distinct probe_serial"):
                 load_config(cfg_path)
-
-    def test_named_builds_with_each_west_need_no_global_west(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "app").mkdir()
-            cfg_path = root / "bench.yml"
-            cfg_path.write_text(
-                "builds:\n  a:\n    app_root: ./app\n    west: ./west-a\n"
-                "  b:\n    app_root: ./app\n    west: ./west-b\n"
-            )
-            loaded = load_config(cfg_path)
-            self.assertIsNone(loaded.installation.tools.west)
-            self.assertEqual(loaded.builds["b"].west, (root / "west-b").resolve())
-
-    def test_multiple_targets_require_unique_probe_serials(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            cfg_path = root / "bench.yml"
-            cfg_path.write_text("targets:\n  a:\n    probe_serial: ABC\n  b:\n    probe_serial: ABC\n")
-            with self.assertRaisesRegex(FlatsatError, "distinct explicit probe_serial"):
-                load_config(cfg_path)
-
-    def test_explicit_non_pico2_board_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "app").mkdir()
-            cfg_path = root / "bench.yml"
-            cfg_path.write_text("builds:\n  app:\n    app_root: ./app\n    board: native_sim\n")
-            with self.assertRaisesRegex(FlatsatError, "only Pico 2"):
-                load_config(cfg_path)
-
-    def test_unhashable_kind_fails_as_config_error(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "app").mkdir()
-            cfg_path = root / "bench.yml"
-            cfg_path.write_text("builds:\n  app:\n    app_root: ./app\n    kind: [build]\n")
-            with self.assertRaisesRegex(FlatsatError, "kind must be"):
-                load_config(cfg_path)
-
-
-class RealDbuildIntegration(unittest.TestCase):
-    def test_example_config_selections(self) -> None:
-        repo = Path(__file__).resolve().parent.parent
-        cfg_path = repo / "configs" / "pico2_public_mock.yml"
-        self.assertTrue(cfg_path.is_file(), "example config missing")
-        cfg = load_config(cfg_path)
-        dbuild_path = cfg.builds["default"].app_root / "dbuild.yml"
-        self.assertTrue(dbuild_path.is_file(), "perovsat-app dbuild.yml not present")
-        devices = load_dbuild(cfg.builds["default"].app_root)["devices"]
-        sel = public_mock_selections(
-            devices,
-            roles={"FLASH": "pico2", "CONSOLE": "logs"},
-        )
-        self.assertEqual(
-            sel,
-            {
-                "IMU": "public-mock",
-                "AMU": "public-mock",
-                "FLASH": "pico2",
-                "CONSOLE": "logs",
-            },
-        )
-        self.assertEqual(
-            cfg.installation.tools.openocd,
-            (Path.home() / ".local" / "bin" / "openocd").resolve(),
-        )
 
 
 if __name__ == "__main__":

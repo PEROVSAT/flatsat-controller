@@ -2,35 +2,31 @@
 
 from collections.abc import Callable
 
-from flatsat_controller.config import ControllerConfig
+from flatsat_controller.config import BenchConfig
 from flatsat_controller.runtime.context import RunContext
 from flatsat_controller.bench import Bench
-from flatsat_controller.firmware import Firmware
+from flatsat_controller.firmware import Firmware, Target
+from flatsat_controller.firmware.types import PICO2_BOARD
 from flatsat_controller.runtime import Operator
-from flatsat_controller.simulation import SimulationLink
 from flatsat_controller.bridge import Bridge
 
 
 def assemble_bench(
     runtime: RunContext,
-    config: ControllerConfig,
+    config: BenchConfig,
     *,
     auto_confirm: bool = False,
     input_fn: Callable[[str], str] | None = None,
 ) -> Bench:
-    runtime.write_metadata("installation", config.installation)
-    if config.simulation_link is not None:
-        runtime.write_metadata("simulation_link", config.simulation_link)
+    runtime.write_metadata("installation", {
+        "workspace": str(config.workspace),
+        "devices": config.devices,
+        "tools": config.tools,
+    })
     return Bench(
         operator=Operator(runtime, auto_confirm=auto_confirm, input_fn=input_fn),
-        targets=config.installation.targets,
-        firmware=Firmware(config.installation.tools, runtime.processes, runtime)
-        if config.installation.tools
-        else None,
-        simulation_link=(
-            SimulationLink(config.simulation_link, runtime)
-            if config.simulation_link
-            else None
-        ),
-        bridge=(Bridge(config.bridge_config, runtime) if config.bridge_config else None),
+        targets={name: Target(name, PICO2_BOARD, device.probe_serial)
+                 for name, device in config.devices.items() if device.probe_serial},
+        firmware=Firmware(config.tools, runtime.processes, runtime),
+        bridge=Bridge(config.bridge_config, runtime),
     )

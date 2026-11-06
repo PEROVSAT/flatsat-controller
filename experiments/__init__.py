@@ -1,4 +1,4 @@
-"""Explicit experiment registration and per-experiment parameter parsing."""
+"""Registered, code-owned FlatSat experiments."""
 
 from dataclasses import dataclass
 from collections.abc import Callable
@@ -6,14 +6,9 @@ from typing import Generic, TypeVar
 
 from flatsat_controller.bench import Bench
 from flatsat_controller.types import Verdict
-from flatsat_controller.config import ControllerConfig
-from .flash_public_mock import (
-    run as flash_public_mock,
-    parameters as public_mock_parameters,
-)
-from .mpu6050_ab import run as mpu6050_ab, parameters as mpu6050_ab_parameters
-from .bridge_utc import run as bridge_utc, parameters as bridge_utc_parameters
-
+from flatsat_controller.config import BenchConfig
+from .utc_sync.experiment import run as bridge_utc, parameters as bridge_utc_parameters
+from .imu_update.experiment import run as imu_update, parameters as imu_update_parameters
 
 ParametersT = TypeVar("ParametersT")
 
@@ -21,11 +16,11 @@ ParametersT = TypeVar("ParametersT")
 @dataclass(frozen=True)
 class Experiment(Generic[ParametersT]):
     run: Callable[[Bench, ParametersT], Verdict | None]
-    parameters: Callable[[ControllerConfig], ParametersT]
+    parameters: Callable[[BenchConfig], ParametersT]
+    directory: str
 
 
 EXPERIMENTS = {
-    "flash-public-mock": Experiment(flash_public_mock, public_mock_parameters),
-    "mpu6050-ab": Experiment(mpu6050_ab, mpu6050_ab_parameters),
-    "bridge-utc": Experiment(bridge_utc, bridge_utc_parameters),
+    "utc-sync": Experiment(bridge_utc, bridge_utc_parameters, "utc_sync"),
+    "imu-update": Experiment(imu_update, imu_update_parameters, "imu_update"),
 }

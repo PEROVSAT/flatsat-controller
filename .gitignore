@@ -75,3 +75,7 @@ __pycache__/
 .pytest_cache/
 flatsat.local.*
 runs/
+
+# Workspace-local bench configuration and legacy check output
+/bench.yml
+/utc-check.json

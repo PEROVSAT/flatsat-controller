@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
-from unittest.mock import patch
 
+from experiments.utc_sync import parameters, run
 from hitl_bridge.verify_utc import UtcVerification
-from experiments.bridge_utc import parameters, run
 from flatsat_controller.bench import Bench
-from flatsat_controller.config import load_config
-from flatsat_controller.runtime.context import RunContext
+from flatsat_controller.config import BenchConfig, Device
+from flatsat_controller.firmware import FirmwareTools
 from flatsat_controller.types import FlatsatError
 
 
@@ -32,95 +32,94 @@ class Firmware:
             raise FlatsatError("flash failed")
 
 
+class BridgeCapability:
+    def __init__(self, events):
+        self.events = events
+        self.passed = True
+
+    @contextmanager
+    def start(self, name):
+        self.events.append(("start", name))
+        observer = self
+        class Link:
+            pass
+        yield Link(), observer
+
+    def verify_current(self, timeout, tolerance):
+        self.events.append(("verify", timeout, tolerance))
+        return {"passed": self.passed, "reason": "UTC converged" if self.passed else "Timed out",
+                "tolerance_ns": tolerance, "consecutive_in_tolerance": 2 if self.passed else 0}
+
+    def verify_utc(self, name, *, timeout_s, tolerance_ns, require_correction):
+        self.events.append(("verify", timeout_s, tolerance_ns, require_correction))
+        return UtcVerification(name, self.passed, "UTC converged" if self.passed else "Timed out",
+                               tolerance_ns, require_correction, self.passed,
+                               2 if self.passed else 0, ())
+
+
 class BridgeUtcTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        root = Path(self.temp.name)
-        (root / "app").mkdir()
-        (root / "inventory.yml").write_text(
-            "listen: 127.0.0.1:4242\ntargets:\n"
-            "  - name: imu0\n    board: rpi_pico2/rp2350a/m33\n"
-            "    probe_serial: 'E665485457168830'\n    simulation:\n"
-            "      address: 1\n      port: /dev/fake-uart\n", encoding="utf-8"
+        self.root = Path(self.temp.name)
+        (self.root / "emulated-devices/mpu6050").mkdir(parents=True)
+        west = self.root / "west"
+        west.write_text("#!/bin/sh\n")
+        west.chmod(0o755)
+        openocd = self.root / "openocd"
+        openocd.write_text("#!/bin/sh\n")
+        openocd.chmod(0o755)
+        self.config = BenchConfig(
+            workspace=self.root,
+            devices={"imu": Device("imu", "E665485457168830", "/dev/fake-uart", 1, 115200)},
+            tools=FirmwareTools(west, openocd),
         )
-        (root / "controller.yml").write_text(
-            "bridge_config: inventory.yml\nbuilds:\n  emulator:\n"
-            f"    app_root: {root / 'app'}\n    board: rpi_pico2/rp2350a/m33\n"
-            "    kind: build\n    west: /fake/west\n"
-            "experiment:\n  timeout_s: 20\n  tolerance_ms: 10\n", encoding="utf-8"
-        )
-        self.config = load_config(root / "controller.yml")
 
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_parameters_resolve_imu_probe_and_simulation(self):
+    def test_parameters_resolve_imu_probe_simulation_and_stock_build(self):
         params = parameters(self.config)
-        self.assertEqual(params.target.name, "imu0")
+        self.assertEqual(params.target.name, "imu")
         self.assertEqual(params.target.probe_serial, "E665485457168830")
         self.assertEqual(params.tolerance_ns, 10_000_000)
         self.assertEqual(params.build.kind, "build")
+        self.assertEqual(params.build.app_root, self.root / "emulated-devices/mpu6050")
 
-    def test_missing_identity_fails_before_flash(self):
-        config = replace(self.config, bridge_config=replace(self.config.bridge_config, targets=()))
-        with self.assertRaisesRegex(FlatsatError, "unknown flash target"):
-            parameters(config)
+    def test_missing_identity_or_wrong_stock_firmware_link_fails_preflight(self):
+        with self.assertRaisesRegex(FlatsatError, "explicit devices.imu.probe_serial"):
+            parameters(replace(self.config, devices={"imu": Device("imu", uart="/dev/fake", address=1)}))
+        with self.assertRaisesRegex(FlatsatError, "address 1"):
+            parameters(replace(self.config, devices={"imu": Device("imu", "SERIAL-1", "/dev/fake", 2, 115200)}))
 
     def test_flash_precedes_utc_and_failures_skip_verification(self):
-        with tempfile.TemporaryDirectory() as temp:
-            run_dir = Path(temp)
-            run_dir.mkdir(exist_ok=True)
-            runtime = RunContext(run_dir, Processes())
-            events = []
-            from flatsat_controller.bridge import Bridge
-            bench = Bench(operator=None, firmware=Firmware(events), bridge=Bridge(self.config.bridge_config, runtime))
-            result = UtcVerification("imu0", True, "UTC converged within tolerance", 10_000_000,
-                                     True, True, 2, ())
+        events = []
+        capability = BridgeCapability(events)
+        bench = Bench(operator=None, firmware=Firmware(events), bridge=capability)
+        verdict = run(bench, parameters(self.config))
+        self.assertEqual([event[0] for event in events], ["flash", "verify"])
+        self.assertTrue(events[1][3], "cold-clock correction remains mandatory")
+        self.assertEqual(verdict.outcome, "pass")
+        events.clear()
+        capability.passed = False
+        verdict = run(bench, parameters(self.config))
+        self.assertEqual(verdict.outcome, "fail")
+        events.clear()
+        bench = replace(bench, firmware=Firmware(events, fail=True))
+        with self.assertRaisesRegex(FlatsatError, "flash failed"):
+            run(bench, parameters(self.config))
+        self.assertEqual([event[0] for event in events], ["flash"])
 
-            def verify(*args, **kwargs):
-                events.append(("verify",))
-                return result
-
-            with patch("flatsat_controller.bridge.verify_utc", verify):
-                verdict = run(bench, parameters(self.config))
-            self.assertEqual([event[0] for event in events], ["flash", "verify"])
-            self.assertEqual(verdict.outcome, "pass")
-            self.assertTrue((run_dir / "utc_evidence.json").is_file())
-
-            events.clear()
-            failed = UtcVerification("imu0", False, "Timed out", 10_000_000,
-                                     True, False, 0, ())
-            with patch("flatsat_controller.bridge.verify_utc", lambda *a, **k: failed):
-                verdict = run(bench, parameters(self.config))
-            self.assertEqual(verdict.outcome, "fail")
-
-            events.clear()
-            bench = replace(bench, firmware=Firmware(events, fail=True))
-            with patch("flatsat_controller.bridge.verify_utc", verify):
-                with self.assertRaisesRegex(FlatsatError, "flash failed"):
-                    run(bench, parameters(self.config))
-            self.assertEqual([event[0] for event in events], ["flash"])
-
-    def test_requires_emulator_build_and_nonzero_rounded_tolerance(self):
-        with self.assertRaisesRegex(FlatsatError, "builds.emulator"):
-            parameters(replace(self.config, builds={"default": self.config.builds["emulator"]}))
-        with self.assertRaisesRegex(FlatsatError, "tolerance_ms"):
-            parameters(replace(self.config, experiment={"tolerance_ms": 0.0000001}))
-        with self.assertRaisesRegex(FlatsatError, "timeout_s"):
-            parameters(replace(self.config, experiment={"timeout_s": 10**1000}))
-
-    def test_verifier_startup_failure_retains_log_and_original_error(self):
-        from flatsat_controller.bridge import Bridge
-
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            runtime = RunContext(root, Processes())
-            bridge = Bridge(self.config.bridge_config, runtime)
-            with patch("flatsat_controller.bridge.verify_utc", side_effect=OSError("UART busy")):
-                with self.assertRaisesRegex(OSError, "UART busy"):
-                    bridge.verify_utc("imu0", timeout_s=1, tolerance_ns=1, require_correction=True)
-            self.assertTrue((root / "bridge-utc.log").exists())
-            self.assertIn("UART busy", (root / "utc_evidence.json").read_text())
+    def test_bridge_observer_records_current_verification_evidence(self):
+        from flatsat_controller.bridge import UtcObserver
+        from queue import Queue
+        class Runtime:
+            def __init__(self): self.metadata = {}
+            def write_metadata(self, name, value): self.metadata[name] = value
+        runtime = Runtime()
+        observer = UtcObserver(Queue(), runtime, "imu")
+        result = observer.verify_current(0.001, 10_000_000)
+        self.assertFalse(result["passed"])
+        self.assertEqual(runtime.metadata["utc_evidence"]["device"], "imu")
 
 
 if __name__ == "__main__":

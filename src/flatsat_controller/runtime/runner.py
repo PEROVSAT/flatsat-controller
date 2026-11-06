@@ -79,14 +79,16 @@ def create_run_dir(runs_root: Path, name: str) -> Path:
     runs_root = runs_root.resolve()
     runs_root.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    base = runs_root / f"{ts}-{name}"
+    # Experiment identity is already represented by its parent directory. Keep
+    # each run folder short and timestamp-only for easy browsing.
+    base = runs_root / ts
     try:
         base.mkdir(parents=True, exist_ok=False)
         return base
     except FileExistsError:
         pass
     for i in range(1, 10000):
-        candidate = runs_root / f"{ts}-{name}-{i}"
+        candidate = runs_root / f"{ts}-{i}"
         try:
             candidate.mkdir(parents=True, exist_ok=False)
             return candidate
